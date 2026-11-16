@@ -70,7 +70,7 @@ suite("AzureDevOpsAuthProvider", () => {
 	});
 
 	suite("signOut", () => {
-		test("should clear the selected account preference", async () => {
+		test("should clear the retained session and selected account", async () => {
 			const mockSession: vscode.AuthenticationSession = {
 				id: "test-session-id",
 				accessToken: "test-access-token",
@@ -101,6 +101,21 @@ suite("AzureDevOpsAuthProvider", () => {
 	});
 
 	suite("getAccessToken", () => {
+		test("should preserve a successful sign-in when silent lookup returns no session", async () => {
+			const session: vscode.AuthenticationSession = {
+				id: "test-session-id",
+				accessToken: "interactive-token",
+				account: { id: "user-id", label: "Test User" },
+				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
+			};
+			getSessionStub.resolves(session);
+			await authProvider.signIn();
+			getSessionStub.resolves(undefined);
+
+			assert.strictEqual(await authProvider.isAuthenticated(), true);
+			assert.strictEqual(await authProvider.getAccessToken(), "interactive-token");
+		});
+
 		test("should use the refreshed Microsoft token after signing in", async () => {
 			const mockSession: vscode.AuthenticationSession = {
 				id: "test-session-id",
@@ -179,7 +194,7 @@ suite("AzureDevOpsAuthProvider", () => {
 			assert.deepStrictEqual(getSessionStub.lastCall.args[2]?.account, mockSession.account);
 		});
 
-		test("should not reuse a token when the Microsoft session is removed", async () => {
+		test("should not reuse a token rejected by Azure DevOps even if Microsoft returns it", async () => {
 			getSessionStub.resolves({
 				id: "test-session-id",
 				accessToken: "expired-token",
@@ -188,10 +203,88 @@ suite("AzureDevOpsAuthProvider", () => {
 			} satisfies vscode.AuthenticationSession);
 			await authProvider.signIn();
 
-			getSessionStub.resolves(undefined);
+			authProvider.invalidateAccessToken("expired-token");
 
 			assert.strictEqual(await authProvider.getAccessToken(), null);
 			assert.strictEqual(await authProvider.isAuthenticated(), false);
+		});
+
+		test("should request a new interactive session after Azure DevOps rejects a token", async () => {
+			const session: vscode.AuthenticationSession = {
+				id: "test-session-id",
+				accessToken: "expired-token",
+				account: { id: "user-id", label: "Test User" },
+				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
+			};
+			getSessionStub.resolves(session);
+			await authProvider.signIn();
+			authProvider.invalidateAccessToken(session.accessToken);
+			getSessionStub.resolves({ ...session, accessToken: "new-interactive-token" });
+
+			await authProvider.signIn();
+
+			assert.deepStrictEqual(getSessionStub.lastCall.args[2], {
+				forceNewSession: true,
+				account: session.account,
+			});
+			getSessionStub.resolves(undefined);
+			assert.strictEqual(await authProvider.getAccessToken(), "new-interactive-token");
+		});
+
+		test("should not accept an interactive session with a rejected token", async () => {
+			const session: vscode.AuthenticationSession = {
+				id: "test-session-id",
+				accessToken: "expired-token",
+				account: { id: "user-id", label: "Test User" },
+				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
+			};
+			getSessionStub.resolves(session);
+			await authProvider.signIn();
+			authProvider.invalidateAccessToken(session.accessToken);
+
+			await assert.rejects(() => authProvider.signIn(), /already rejected/);
+			assert.strictEqual(await authProvider.getAccessToken(), null);
+		});
+
+		test("should keep a newer session when an older request is rejected", async () => {
+			const session: vscode.AuthenticationSession = {
+				id: "test-session-id",
+				accessToken: "old-token",
+				account: { id: "user-id", label: "Test User" },
+				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
+			};
+			getSessionStub.resolves(session);
+			await authProvider.signIn();
+			getSessionStub.resolves({ ...session, accessToken: "new-token" });
+			assert.strictEqual(await authProvider.getAccessToken(), "new-token");
+
+			authProvider.invalidateAccessToken("old-token");
+			getSessionStub.resolves(undefined);
+
+			assert.strictEqual(await authProvider.getAccessToken(), "new-token");
+		});
+
+		test("should not undo a sign-out when a silent lookup finishes late", async () => {
+			const session: vscode.AuthenticationSession = {
+				id: "test-session-id",
+				accessToken: "interactive-token",
+				account: { id: "user-id", label: "Test User" },
+				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
+			};
+			getSessionStub.resolves(session);
+			await authProvider.signIn();
+			let resolveSession: ((value: vscode.AuthenticationSession) => void) | undefined;
+			getSessionStub.returns(
+				new Promise<vscode.AuthenticationSession>((resolve) => {
+					resolveSession = resolve;
+				}),
+			);
+			const token = authProvider.getAccessToken();
+			await authProvider.signOut();
+			assert.ok(resolveSession);
+			resolveSession(session);
+
+			assert.strictEqual(await token, null);
 		});
 
 		test("should surface session refresh errors instead of reusing a stale token", async () => {
