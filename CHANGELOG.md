@@ -4,6 +4,10 @@ All notable changes to the Azure DevOps PR Viewer extension.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Expired authentication sessions** - Request the current Microsoft session silently when an access token is needed instead of reusing a stale token indefinitely. Preserve the selected account while allowing VS Code to renew tokens without signing in again or reloading the window.
+
 ## [1.8.1] - 2026-05-07
 
 ### Fixed

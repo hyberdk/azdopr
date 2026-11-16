@@ -10,7 +10,7 @@ export class AzureDevOpsAuthProvider {
 		`${AzureDevOpsAuthProvider.AZURE_DEVOPS_RESOURCE_ID}/user_impersonation`,
 	];
 
-	private currentSession: vscode.AuthenticationSession | null = null;
+	private currentAccount: vscode.AuthenticationSessionAccountInformation | undefined;
 
 	async signIn(): Promise<void> {
 		const session = await vscode.authentication.getSession(
@@ -23,33 +23,26 @@ export class AzureDevOpsAuthProvider {
 			throw new Error("Failed to obtain authentication session");
 		}
 
-		this.currentSession = session;
+		this.currentAccount = session.account;
 	}
 
 	async signOut(): Promise<void> {
-		// Clear the current session reference
+		// Clear the selected account preference
 		// Note: VS Code manages authentication sessions centrally
 		// Users can fully sign out through VS Code's Accounts menu
-		this.currentSession = null;
+		this.currentAccount = undefined;
 	}
 
 	async getAccessToken(): Promise<string | null> {
-		if (this.currentSession?.accessToken) {
-			return this.currentSession.accessToken;
-		}
-
+		// VS Code owns token caching and renewal; retained session objects can become stale.
 		const session = await vscode.authentication.getSession(
 			"microsoft",
 			AzureDevOpsAuthProvider.SCOPES,
-			{ createIfNone: false, silent: true },
+			{ createIfNone: false, silent: true, account: this.currentAccount },
 		);
 
-		if (session?.accessToken) {
-			this.currentSession = session;
-			return session.accessToken;
-		}
-
-		return null;
+		this.currentAccount = session?.account;
+		return session?.accessToken || null;
 	}
 
 	async isAuthenticated(): Promise<boolean> {

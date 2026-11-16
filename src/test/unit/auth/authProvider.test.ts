@@ -70,7 +70,7 @@ suite("AzureDevOpsAuthProvider", () => {
 	});
 
 	suite("signOut", () => {
-		test("should clear current session", async () => {
+		test("should clear the selected account preference", async () => {
 			const mockSession: vscode.AuthenticationSession = {
 				id: "test-session-id",
 				accessToken: "test-access-token",
@@ -90,6 +90,7 @@ suite("AzureDevOpsAuthProvider", () => {
 			getSessionStub.resolves(null);
 			const tokenAfter = await authProvider.getAccessToken();
 			assert.strictEqual(tokenAfter, null);
+			assert.strictEqual(getSessionStub.lastCall.args[2]?.account, undefined);
 		});
 
 		test("should not throw error when signing out without active session", async () => {
@@ -100,10 +101,10 @@ suite("AzureDevOpsAuthProvider", () => {
 	});
 
 	suite("getAccessToken", () => {
-		test("should return cached access token when session exists", async () => {
+		test("should use the refreshed Microsoft token after signing in", async () => {
 			const mockSession: vscode.AuthenticationSession = {
 				id: "test-session-id",
-				accessToken: "cached-token",
+				accessToken: "expired-token",
 				account: { id: "user-id", label: "Test User" },
 				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
 			};
@@ -111,15 +112,15 @@ suite("AzureDevOpsAuthProvider", () => {
 			getSessionStub.resolves(mockSession);
 			await authProvider.signIn();
 
-			// Reset stub to ensure it's not called again
-			getSessionStub.reset();
+			getSessionStub.resolves({ ...mockSession, accessToken: "refreshed-token" });
 
 			const token = await authProvider.getAccessToken();
-			assert.strictEqual(token, "cached-token");
-			assert.ok(getSessionStub.notCalled, "Should use cached token without API call");
+			assert.strictEqual(token, "refreshed-token");
+			assert.strictEqual(getSessionStub.lastCall.args[2]?.silent, true);
+			assert.deepStrictEqual(getSessionStub.lastCall.args[2]?.account, mockSession.account);
 		});
 
-		test("should fetch new token when no cached session exists", async () => {
+		test("should fetch a token when no account has been selected", async () => {
 			const mockSession: vscode.AuthenticationSession = {
 				id: "test-session-id",
 				accessToken: "new-token",
@@ -158,7 +159,7 @@ suite("AzureDevOpsAuthProvider", () => {
 			assert.strictEqual(callArgs[2]?.silent, true);
 		});
 
-		test("should cache session from silent authentication", async () => {
+		test("should use the refreshed Microsoft token after silent authentication", async () => {
 			const mockSession: vscode.AuthenticationSession = {
 				id: "test-session-id",
 				accessToken: "silent-token",
@@ -171,11 +172,41 @@ suite("AzureDevOpsAuthProvider", () => {
 			const token1 = await authProvider.getAccessToken();
 			assert.strictEqual(token1, "silent-token");
 
-			getSessionStub.reset();
+			getSessionStub.resolves({ ...mockSession, accessToken: "refreshed-token" });
 
 			const token2 = await authProvider.getAccessToken();
-			assert.strictEqual(token2, "silent-token");
-			assert.ok(getSessionStub.notCalled, "Should use cached session");
+			assert.strictEqual(token2, "refreshed-token");
+			assert.deepStrictEqual(getSessionStub.lastCall.args[2]?.account, mockSession.account);
+		});
+
+		test("should not reuse a token when the Microsoft session is removed", async () => {
+			getSessionStub.resolves({
+				id: "test-session-id",
+				accessToken: "expired-token",
+				account: { id: "user-id", label: "Test User" },
+				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
+			} satisfies vscode.AuthenticationSession);
+			await authProvider.signIn();
+
+			getSessionStub.resolves(undefined);
+
+			assert.strictEqual(await authProvider.getAccessToken(), null);
+			assert.strictEqual(await authProvider.isAuthenticated(), false);
+		});
+
+		test("should surface session refresh errors instead of reusing a stale token", async () => {
+			getSessionStub.resolves({
+				id: "test-session-id",
+				accessToken: "expired-token",
+				account: { id: "user-id", label: "Test User" },
+				scopes: ["499b84ac-1321-427f-aa17-267ca6975798/user_impersonation"],
+			} satisfies vscode.AuthenticationSession);
+			await authProvider.signIn();
+
+			const error = new Error("Microsoft session refresh failed");
+			getSessionStub.rejects(error);
+
+			await assert.rejects(() => authProvider.getAccessToken(), error);
 		});
 	});
 
@@ -212,8 +243,6 @@ suite("AzureDevOpsAuthProvider", () => {
 			getSessionStub.resolves(mockSession);
 
 			await authProvider.signIn();
-
-			getSessionStub.reset();
 
 			const isAuth = await authProvider.isAuthenticated();
 			assert.strictEqual(isAuth, true);
